@@ -142,12 +142,13 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     console.log(`[Webhook] Mensagem de ${numero}: "${texto.substring(0, 80)}"`)
 
-    // Processa de forma assíncrona sem bloquear
-    processarMensagem(numero, messageId, texto).catch((err) => {
+    // Aguarda processamento (Vercel encerra a função após o return)
+    try {
+        await processarMensagem(numero, messageId, texto)
+    } catch (err) {
         console.error(`[Webhook] Erro ao processar ${numero}:`, err)
-    })
+    }
 
-    // Z-API exige 200 imediato
     return NextResponse.json({ ok: true })
 }
 
