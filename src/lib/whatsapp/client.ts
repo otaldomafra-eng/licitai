@@ -38,12 +38,16 @@ function formatarData(dataISO: string | null): string {
 async function chamarZAPI(endpoint: string, body: unknown): Promise<unknown> {
     const url = `${ZAPI_BASE}/${endpoint}`
 
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+    }
+    if (process.env.ZAPI_CLIENT_TOKEN) {
+        headers['Client-Token'] = process.env.ZAPI_CLIENT_TOKEN
+    }
+
     const res = await fetch(url, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Client-Token': process.env.ZAPI_CLIENT_TOKEN ?? '',
-        },
+        headers,
         body: JSON.stringify(body),
     })
 
