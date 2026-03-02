@@ -29,7 +29,7 @@ export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname
 
   // Rotas públicas que não precisam de auth
-  const rotasPublicas = ['/', '/login', '/cadastro', '/api/auth']
+  const rotasPublicas = ['/', '/login', '/cadastro', '/api/auth', '/api/whatsapp', '/api/pncp', '/api/ai']
   const ehRotaPublica = rotasPublicas.some((r) => pathname.startsWith(r))
 
   // Usuário não logado tentando acessar área protegida
