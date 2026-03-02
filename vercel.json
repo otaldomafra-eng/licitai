@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/pncp/sync",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/ai/process",
+      "schedule": "0 7 * * *"
+    }
+  ]
+}
