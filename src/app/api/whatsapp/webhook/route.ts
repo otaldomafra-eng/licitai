@@ -22,11 +22,11 @@ const SchemaZAPIWebhook = z.object({
     fromMe: z.boolean(),
     momment: z.number().optional(),
     status: z.string().optional(),
-    chatName: z.string().optional(),
-    senderPhoto: z.string().optional(),
-    senderName: z.string().optional(),
+    chatName: z.string().nullable().optional(),
+    senderPhoto: z.string().nullable().optional(),
+    senderName: z.string().nullable().optional(),
     participantPhone: z.string().nullable().optional(),
-    photo: z.string().optional(),
+    photo: z.string().nullable().optional(),
     broadcast: z.boolean().optional(),
     type: z.string(),            // "ReceivedCallback"
     text: z.object({
