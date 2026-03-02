@@ -153,8 +153,10 @@ export async function POST(req: Request): Promise<NextResponse> {
 }
 
 async function processarMensagem(numero: string, messageId: string, texto: string): Promise<void> {
+    console.log(`[Webhook] Iniciando processarMensagem para ${numero}`)
     // Só responde para usuários cadastrados — contatos pessoais são ignorados
     const cadastrado = await usuarioCadastrado(numero)
+    console.log(`[Webhook] Cadastrado: ${cadastrado}`)
     if (!cadastrado) {
         console.log(`[Webhook] Número ${numero} não cadastrado — ignorado`)
         return
@@ -163,6 +165,7 @@ async function processarMensagem(numero: string, messageId: string, texto: strin
     marcarComoLido(numero, messageId).catch(() => { })
 
     const etapaAtual = await buscarEtapaConversa(numero)
+    console.log(`[Webhook] Etapa atual: ${etapaAtual ?? 'nova'}`)
     const intencao = await identificarIntencao(texto, etapaAtual)
 
     console.log(`[Webhook] ${numero} — etapa: ${etapaAtual ?? 'nova'}, intenção: ${intencao}`)
