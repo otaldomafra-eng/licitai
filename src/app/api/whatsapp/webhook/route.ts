@@ -114,8 +114,11 @@ export async function POST(req: Request): Promise<NextResponse> {
         return NextResponse.json({ erro: 'Payload inválido' }, { status: 400 })
     }
 
+    console.log('[Webhook] Payload recebido:', JSON.stringify(body))
+
     const parsed = SchemaZAPIWebhook.safeParse(body)
     if (!parsed.success) {
+        console.log('[Webhook] Zod falhou:', JSON.stringify(parsed.error.issues))
         // Pode ser outro tipo de evento Z-API (status, etc.) — ignorar
         return NextResponse.json({ ok: true })
     }
