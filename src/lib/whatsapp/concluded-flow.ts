@@ -65,14 +65,14 @@ function detectarSaudacao(texto: string): boolean {
 }
 
 function respostaSaudacao(): string {
-    return [
-        '👋 Olá! Como posso te ajudar?',
-        '',
-        'Você pode:',
-        '• Descrever o edital que procura (ex: _"obras em SP acima de 100k"_)',
-        '• Responder *menu* para ver todas as opções',
-        '• Responder *meus editais* para ver alertas recentes',
-    ].join('\n')
+  return [
+    '👋 Olá! Como posso te ajudar?',
+    '',
+    'Você pode:',
+    '• Descrever o edital que procura (ex: _"obras em SP acima de 100k"_)',
+    '• Responder *menu* para ver todas as opções',
+    '• Responder *meus editais* para ver alertas recentes',
+  ].join('\n')
 }
 
 function detectarMaisResultados(texto: string): boolean {
@@ -99,16 +99,16 @@ function detectarPedidoDetalhe(texto: string): number | null {
 }
 
 function mensagemReclamacaoResultados(): string {
-    return [
-        '🤔 Entendi que os resultados não foram o que você esperava.',
-        '',
-        'Tente descrever com mais detalhes o que está buscando:',
-        '* _"Projetos de engenharia civil em Tocantins"_',
-        '* _"Consultoria ambiental acima de R$ 200 mil"_',
-        '* _"Serviços de TI para prefeituras com prazo acima de 7 dias"_',
-        '',
-        '_Quanto mais específico, melhor o resultado!_ 🎯',
-    ].join('\n')
+  return [
+    '🤔 Entendi que os resultados não foram o que você esperava.',
+    '',
+    'Tente descrever com mais detalhes o que está buscando:',
+    '* _"Projetos de engenharia civil em Tocantins"_',
+    '* _"Consultoria ambiental acima de R$ 200 mil"_',
+    '* _"Serviços de TI para prefeituras com prazo acima de 7 dias"_',
+    '',
+    '_Quanto mais específico, melhor o resultado!_ 🎯',
+  ].join('\n')
 }
 
 export async function handleFluxoConcluido(
