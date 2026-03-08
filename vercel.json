@@ -1,12 +1,8 @@
 {
   "crons": [
-    {
-      "path": "/api/pncp/sync",
-      "schedule": "0 6 * * *"
-    },
-    {
-      "path": "/api/ai/process",
-      "schedule": "0 7 * * *"
-    }
+    { "path": "/api/pncp/sync",           "schedule": "0 6 * * *"   },
+    { "path": "/api/ai/process",          "schedule": "0 7 * * *"   },
+    { "path": "/api/whatsapp/lembretes",  "schedule": "0 9 * * *"   },
+    { "path": "/api/whatsapp/relatorio",  "schedule": "0 8 * * 1"   }
   ]
 }

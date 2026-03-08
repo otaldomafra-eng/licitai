@@ -1,16 +1,24 @@
-import type { EditalPNCP, RespostaPNCP } from '@/types'
+﻿import type { EditalPNCP, RespostaPNCP } from '@/types'
 
-const PNCP_BASE_URL = 'https://pncp.gov.br/api/pncp/v1'
+// Nova API PNCP (migraÃ§Ã£o de /api/pncp/v1 â†’ /api/consulta)
+const PNCP_BASE_URL = 'https://pncp.gov.br/api/consulta'
 
-// Modalidades PNCP:
-// 1=Leilão Eletrônico, 2=Diálogo Competitivo, 3=Concurso,
-// 4=Concorrência, 5=Concorrência Eletrônica, 6=Pregão Eletrônico,
-// 7=Dispensa Eletrônica, 8=Credenciamento, 9=Pré-qualificação
+// Modalidades PNCP (atualizado em 2026):
+// 1=LeilÃ£o EletrÃ´nico, 2=DiÃ¡logo Competitivo, 3=Concurso,
+// 4=ConcorrÃªncia EletrÃ´nica, 5=ConcorrÃªncia Presencial,
+// 6=PregÃ£o EletrÃ´nico, 7=PregÃ£o Presencial,
+// 8=Dispensa de LicitaÃ§Ã£o, 9=Inexigibilidade, 12=Credenciamento
 export const MODALIDADES = {
-  PREGAO_ELETRONICO: '6',
-  DISPENSA_ELETRONICA: '7',
-  CONCORRENCIA: '4',
-  CONCORRENCIA_ELETRONICA: '5',
+  LEILAO_ELETRONICO:       '1',
+  DIALOGO_COMPETITIVO:     '2',
+  CONCURSO:                '3',
+  CONCORRENCIA_ELETRONICA: '4',
+  CONCORRENCIA_PRESENCIAL: '5',
+  PREGAO_ELETRONICO:       '6',
+  PREGAO_PRESENCIAL:       '7',
+  DISPENSA_LICITACAO:      '8',
+  INEXIGIBILIDADE:         '9',
+  CREDENCIAMENTO:          '12',
 } as const
 
 function formatarData(date: Date): string {
@@ -33,6 +41,7 @@ interface OpcoesConsulta {
   uf?: string
   modalidade?: string
   diasAtras?: number
+  maxPaginas?: number  // limite de pÃ¡ginas por chamada (para respeitar timeout do Vercel)
 }
 
 export async function buscarEditaisAtivos(
@@ -50,53 +59,58 @@ export async function buscarEditaisAtivos(
     dataInicial: getDataInicial(diasAtras),
     dataFinal: getDataAtual(),
     codigoModalidadeContratacao: modalidade,
-    situacao: '1', // 1 = Recebendo Proposta
     pagina: String(pagina),
-    tamanhoPagina: String(tamanhoPagina),
+    tamanhoPagina: String(Math.max(tamanhoPagina, 10)), // mÃ­nimo 10
   })
 
   if (uf) params.set('uf', uf)
 
-  const url = `${PNCP_BASE_URL}/consultas/editais?${params}`
+  // /proposta retorna apenas editais com prazo de proposta em aberto
+  const url = `${PNCP_BASE_URL}/v1/contratacoes/proposta?${params}`
 
   const response = await fetch(url, {
     headers: { Accept: 'application/json' },
-    // Cache de 1 hora no Next.js para não sobrecarregar a API
     next: { revalidate: 3600 },
   })
 
   if (response.status === 404) {
-    // PNCP retorna 404 quando não há resultados — tratamos como lista vazia
     return { data: [], totalRegistros: 0, totalPaginas: 0, numeroPagina: pagina, tamanhoPagina }
   }
 
   if (!response.ok) {
-    throw new Error(`PNCP API erro ${response.status}: ${response.statusText}`)
+    const body = await response.text()
+    throw new Error(`PNCP API erro ${response.status}: ${body.substring(0, 200)}`)
   }
 
   return response.json() as Promise<RespostaPNCP>
 }
 
-// Busca todas as páginas disponíveis
+// Busca todas as pÃ¡ginas disponÃ­veis (com limite para respeitar timeout do Vercel)
 export async function buscarTodosEditais(
   opcoes: Omit<OpcoesConsulta, 'pagina'> = {}
 ): Promise<EditalPNCP[]> {
+  const { maxPaginas = 50, ...resto } = opcoes
   const todosEditais: EditalPNCP[] = []
   let pagina = 1
 
   while (true) {
-    const dados = await buscarEditaisAtivos({ ...opcoes, pagina })
+    const dados = await buscarEditaisAtivos({ ...resto, pagina })
 
     if (!dados.data?.length) break
 
     todosEditais.push(...dados.data)
 
     if (pagina >= dados.totalPaginas) break
+    if (pagina >= maxPaginas) {
+      console.log(`[PNCP] Limite de ${maxPaginas} pÃ¡ginas atingido (${dados.totalPaginas} total disponÃ­veis)`)
+      break
+    }
     pagina++
 
-    // Rate limiting: aguarda 300ms entre páginas para não sobrecarregar PNCP
-    await new Promise((r) => setTimeout(r, 300))
+    // Rate limiting: aguarda 150ms entre pÃ¡ginas
+    await new Promise((r) => setTimeout(r, 150))
   }
 
   return todosEditais
 }
+

@@ -1,8 +1,11 @@
 /**
- * POST /api/whatsapp/webhook
+ * /api/whatsapp/webhook
  *
- * Endpoint receptor de mensagens da Z-API.
- * Docs: https://developer.z-api.io/webhooks/on-message-received
+ * Recebe mensagens da Meta WhatsApp Cloud API.
+ * Docs: https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks
+ *
+ * GET  â†’ verificaÃ§Ã£o do webhook (hub.challenge)
+ * POST â†’ mensagens recebidas
  */
 
 import { NextResponse } from 'next/server'
@@ -10,51 +13,68 @@ import { z } from 'zod'
 import { enviarMensagem, marcarComoLido } from '@/lib/whatsapp/client'
 import { identificarIntencao, respostaDuvida, respostaMenu } from '@/lib/ai/assistant'
 import { handleOnboarding, reiniciarOnboarding } from '@/lib/whatsapp/handlers/onboarding'
+import { handleConsulta, handleDetalheEdital, handleAcaoEdital, handleRefinamento, handleMaisResultados } from '@/lib/whatsapp/handlers/consulta'
+import { consultarPlano, alternarAlertas, respostaSuporte } from '@/lib/whatsapp/handlers/ajuda'
+import { listarFavoritos } from '@/lib/whatsapp/handlers/favoritos'
 import { createAdminClient } from '@/lib/supabase/server'
-import type { EtapaOnboarding } from '@/types'
+import { executarPipelineWebhook } from '@/lib/whatsapp/webhook-pipeline'
+import type { EtapaOnboarding, ContextoConversa } from '@/types'
 
-// ─── Schema Zod — Z-API webhook payload ───────────────────────────────────
+// â”€â”€â”€ Schema Zod â€” Meta Cloud API webhook payload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-const SchemaZAPIWebhook = z.object({
-    instanceId: z.string().optional(),
-    messageId: z.string(),
-    phone: z.string(),           // número do remetente (ex: "5511999999999")
-    fromMe: z.boolean(),
-    momment: z.number().optional(),
-    status: z.string().optional(),
-    chatName: z.string().nullable().optional(),
-    senderPhoto: z.string().nullable().optional(),
-    senderName: z.string().nullable().optional(),
-    participantPhone: z.string().nullable().optional(),
-    photo: z.string().nullable().optional(),
-    broadcast: z.boolean().optional(),
-    type: z.string(),            // "ReceivedCallback"
-    text: z.object({
-        message: z.string(),
-    }).optional(),
-    image: z.object({
-        caption: z.string().optional(),
-    }).optional(),
+const SchemaMetaMensagem = z.object({
+    from: z.string(),
+    id: z.string(),
+    timestamp: z.string(),
+    type: z.string(),
+    text: z.object({ body: z.string() }).optional(),
+    image: z.object({ caption: z.string().optional(), mime_type: z.string().optional() }).optional(),
     audio: z.object({}).optional(),
     document: z.object({}).optional(),
-    isGroup: z.boolean().optional(),
+    sticker: z.object({}).optional(),
+    reaction: z.object({}).optional(),
 })
 
-// ─── Helpers ──────────────────────────────────────────────────────────────
+const SchemaMetaWebhook = z.object({
+    object: z.string(),
+    entry: z.array(z.object({
+        id: z.string(),
+        changes: z.array(z.object({
+            value: z.object({
+                messaging_product: z.string().optional(),
+                metadata: z.object({
+                    display_phone_number: z.string(),
+                    phone_number_id: z.string(),
+                }).optional(),
+                contacts: z.array(z.object({
+                    profile: z.object({ name: z.string() }).optional(),
+                    wa_id: z.string(),
+                })).optional(),
+                messages: z.array(SchemaMetaMensagem).optional(),
+                statuses: z.array(z.any()).optional(),
+            }),
+            field: z.string(),
+        })),
+    })),
+})
 
-function extrairTexto(payload: z.infer<typeof SchemaZAPIWebhook>): string | null {
-    if (payload.text?.message) return payload.text.message.trim()
-    if (payload.image?.caption) return payload.image.caption.trim()
+type MetaMensagem = z.infer<typeof SchemaMetaMensagem>
+
+// â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function extrairTexto(msg: MetaMensagem): string | null {
+    if (msg.type === 'text' && msg.text?.body) return msg.text.body.trim()
+    if (msg.type === 'image' && msg.image?.caption) return msg.image.caption.trim()
     return null
 }
 
-/** Verifica se o número tem cadastro ativo no sistema */
+/** Verifica se o nÃºmero tem cadastro ativo no sistema */
 async function usuarioCadastrado(numero: string): Promise<boolean> {
     const supabase = createAdminClient()
     const { data } = await supabase
         .from('usuarios')
         .select('id')
-        .eq('numero_whatsapp', numero)
+        .eq('whatsapp', numero)
         .maybeSingle()
     return !!data
 }
@@ -70,40 +90,108 @@ async function buscarEtapaConversa(numero: string): Promise<EtapaOnboarding | nu
     return (data?.etapa as EtapaOnboarding) ?? null
 }
 
-// ─── Handlers de comandos ─────────────────────────────────────────────────
+/** Busca o contexto completo da conversa */
+async function buscarContextoConversa(numero: string): Promise<ContextoConversa | null> {
+    const supabase = createAdminClient()
+    const { data } = await supabase
+        .from('conversas')
+        .select('contexto_json')
+        .eq('numero_whatsapp', numero)
+        .maybeSingle()
+    return (data?.contexto_json as ContextoConversa) ?? null
+}
 
-async function handleComando(numero: string, texto: string): Promise<string> {
+// â”€â”€â”€ DetecÃ§Ã£o de reclamaÃ§Ã£o sobre resultados â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+/**
+ * Detecta quando o usuÃ¡rio estÃ¡ reclamando dos resultados (nÃ£o fazendo nova busca).
+ * Ex: "mas esses nÃ£o sÃ£o o que pedi", "resultados errados", "nÃ£o Ã© isso"
+ */
+
+async function registrarInteracao(numero: string, textoUsuario: string, textoAssistente: string): Promise<void> {
+    try {
+        const supabase = createAdminClient()
+        const { data } = await supabase
+            .from('conversas')
+            .select('contexto_json')
+            .eq('numero_whatsapp', numero)
+            .maybeSingle()
+
+        const contexto = (data?.contexto_json as ContextoConversa) ?? {}
+        const historico = contexto.historico_mensagens ?? []
+        const agora = new Date().toISOString()
+
+        const atualizado = [
+            ...historico,
+            { role: 'user' as const, texto: textoUsuario, at: agora },
+            { role: 'assistant' as const, texto: textoAssistente, at: agora },
+        ].slice(-12)
+
+        await supabase
+            .from('conversas')
+            .update({
+                contexto_json: {
+                    ...contexto,
+                    historico_mensagens: atualizado,
+                },
+            })
+            .eq('numero_whatsapp', numero)
+    } catch (err) {
+        console.warn('[Webhook] Erro ao registrar historico:', err instanceof Error ? err.message : err)
+    }
+}
+async function handleComando(numero: string, texto: string, contexto?: ContextoConversa): Promise<string> {
     const cmd = texto.toLowerCase().trim()
 
     if (cmd === 'menu' || cmd === 'ajuda' || cmd === 'help') {
         return respostaMenu()
     }
 
+    if (cmd === 'suporte') {
+        return respostaSuporte()
+    }
+
     if (cmd === 'mudar perfil' || cmd === 'alterar perfil' || cmd === 'novo perfil') {
         return reiniciarOnboarding(numero)
     }
 
-    if (cmd === 'pausar' || cmd === 'parar alertas') {
-        return ['⏸️ Alertas pausados por 7 dias.', '', '_Responda *ativar* a qualquer momento para retomar._'].join('\n')
+    if (cmd === 'pausar' || cmd === 'parar alertas' || cmd === 'parar') {
+        return alternarAlertas(numero, true)
     }
 
-    if (cmd === 'planos' || cmd === 'assinar' || cmd === 'upgrade') {
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://licitaia.com.br'
-        return [
-            '💳 *Planos LicitaIA*',
-            '',
-            '🆓 *Grátis:* R$ 0/mês — 3 alertas, 10 consultas',
-            '⭐ *Básico:* R$ 97/mês — 30 alertas, consultas ilimitadas',
-            '🚀 *Pro:* R$ 297/mês — tudo ilimitado + multi-perfil',
-            '',
-            `👉 ${appUrl}/checkout`,
-        ].join('\n')
+    if (cmd === 'ativar' || cmd === 'retomar alertas' || cmd === 'retomar') {
+        return alternarAlertas(numero, false)
     }
 
-    return respostaDuvida(texto)
+    if (cmd === 'planos' || cmd === 'assinar' || cmd === 'upgrade' || cmd === 'meu plano') {
+        return consultarPlano(numero)
+    }
+
+    if (cmd === 'meus editais' || cmd === 'favoritos' || cmd === 'editais salvos' || cmd === 'seguindo') {
+        return listarFavoritos(numero)
+    }
+
+    return respostaDuvida(texto, contexto)
 }
 
-// ─── Route Handler ─────────────────────────────────────────────────────────
+// â”€â”€â”€ GET â€” VerificaÃ§Ã£o do webhook Meta â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+export async function GET(req: Request): Promise<NextResponse> {
+    const { searchParams } = new URL(req.url)
+    const mode      = searchParams.get('hub.mode')
+    const token     = searchParams.get('hub.verify_token')
+    const challenge = searchParams.get('hub.challenge')
+
+    if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+        console.log('[Webhook] Meta webhook verificado com sucesso')
+        return new NextResponse(challenge, { status: 200 })
+    }
+
+    console.warn('[Webhook] Falha na verificaÃ§Ã£o:', { mode, token })
+    return NextResponse.json({ erro: 'Token invÃ¡lido' }, { status: 403 })
+}
+
+// â”€â”€â”€ POST â€” Mensagens recebidas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function POST(req: Request): Promise<NextResponse> {
     let body: unknown
@@ -111,92 +199,145 @@ export async function POST(req: Request): Promise<NextResponse> {
     try {
         body = await req.json()
     } catch {
-        return NextResponse.json({ erro: 'Payload inválido' }, { status: 400 })
+        return NextResponse.json({ erro: 'Payload invÃ¡lido' }, { status: 400 })
     }
 
     console.log('[Webhook] Payload recebido:', JSON.stringify(body))
 
-    const parsed = SchemaZAPIWebhook.safeParse(body)
+    const parsed = SchemaMetaWebhook.safeParse(body)
     if (!parsed.success) {
-        console.log('[Webhook] Zod falhou:', JSON.stringify(parsed.error.issues))
-        // Pode ser outro tipo de evento Z-API (status, etc.) — ignorar
+        // Meta envia outros eventos (status, read receipts) â€” retorna 200 sempre
+        console.log('[Webhook] Schema nÃ£o reconhecido (provÃ¡vel status update) â€” ignorado')
         return NextResponse.json({ ok: true })
     }
 
-    const msg = parsed.data
+    // Processa cada entry â†’ change â†’ message
+    for (const entry of parsed.data.entry) {
+        for (const change of entry.changes) {
+            if (change.field !== 'messages') continue
 
-    // Ignora mensagens enviadas pelo próprio bot
-    if (msg.fromMe) return NextResponse.json({ ok: true })
+            const messages = change.value.messages
+            if (!messages?.length) continue // status update sem mensagem
 
-    // Ignora grupos
-    if (msg.isGroup) return NextResponse.json({ ok: true })
+            for (const msg of messages) {
+                const texto = extrairTexto(msg)
+                if (!texto) continue // Ã¡udio, documento, sticker â€” ignora
 
-    // Só processa tipo ReceivedCallback
-    if (msg.type !== 'ReceivedCallback') return NextResponse.json({ ok: true })
+                const numero    = msg.from
+                const messageId = msg.id
 
-    const texto = extrairTexto(msg)
-    if (!texto) return NextResponse.json({ ok: true })
+                console.log(`[Webhook] Mensagem de ${numero}: "${texto.substring(0, 80)}"`)
 
-    const numero = msg.phone
-    const messageId = msg.messageId
-
-    console.log(`[Webhook] Mensagem de ${numero}: "${texto.substring(0, 80)}"`)
-
-    // Aguarda processamento (Vercel encerra a função após o return)
-    try {
-        await processarMensagem(numero, messageId, texto)
-    } catch (err) {
-        console.error(`[Webhook] Erro ao processar ${numero}:`, err)
+                try {
+                    await processarMensagem(numero, messageId, texto)
+                } catch (err) {
+                    console.error(`[Webhook] Erro ao processar ${numero}:`, err)
+                    await enviarMensagem(numero, 'âš ï¸ Ocorreu um erro interno. Tente novamente em instantes.').catch(() => {})
+                }
+            }
+        }
     }
 
     return NextResponse.json({ ok: true })
 }
 
+// â”€â”€â”€ Processamento principal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 async function processarMensagem(numero: string, messageId: string, texto: string): Promise<void> {
-    console.log(`[Webhook] Iniciando processarMensagem para ${numero}`)
-    // Só responde para usuários cadastrados — contatos pessoais são ignorados
-    const cadastrado = await usuarioCadastrado(numero)
-    console.log(`[Webhook] Cadastrado: ${cadastrado}`)
-    if (!cadastrado) {
-        console.log(`[Webhook] Número ${numero} não cadastrado — ignorado`)
-        return
+    try {
+        console.log(`[Webhook] Iniciando processarMensagem para ${numero}`)
+
+        const cadastrado = await usuarioCadastrado(numero)
+        console.log(`[Webhook] Cadastrado: ${cadastrado}`)
+        if (!cadastrado) {
+            console.log(`[Webhook] N??mero ${numero} n??o cadastrado ??? ignorado`)
+            return
+        }
+
+        marcarComoLido(numero, messageId).catch(() => { })
+
+        const etapaAtual = await buscarEtapaConversa(numero)
+        let contextoAtual: ContextoConversa = (await buscarContextoConversa(numero)) ?? {}
+        console.log(`[Webhook] Etapa atual: ${etapaAtual ?? 'nova'}`)
+
+        const responder = async (mensagem: string): Promise<void> => {
+            await enviarMensagem(numero, mensagem)
+            await registrarInteracao(numero, texto, mensagem)
+        }
+
+        const resultadoPipeline = await executarPipelineWebhook({
+            numero,
+            texto,
+            etapaAtual,
+            contextoAtual,
+            atualizarContextoConversa,
+            responder,
+            identificarIntencao,
+            resolverConsulta: handleConsulta,
+            resolverDuvida: respostaDuvida,
+            resolverAcaoEdital: handleAcaoEdital,
+            resolverDetalheEdital: handleDetalheEdital,
+            resolverMaisResultados: handleMaisResultados,
+            resolverRefinamento: handleRefinamento,
+            resolverOnboarding: handleOnboarding,
+            resolverComando: handleComando,
+        })
+
+        contextoAtual = resultadoPipeline.contextoAtual
+        if (resultadoPipeline.intencao) {
+            console.log(`[Webhook] ${numero} - etapa: ${etapaAtual ?? 'nova'}, intencao: ${resultadoPipeline.intencao}`)
+        }
+
+        if (resultadoPipeline.handled) return
+
+        const fallback = await respostaDuvida(texto, contextoAtual ?? undefined)
+        await responder(fallback)
+    } catch (err) {
+        const detalhes = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err)
+        console.error(`[Webhook] Falha dentro de processarMensagem (${numero}): ${detalhes}`)
+
+        const mensagemResiliente = [
+            '⚠️ Desculpe, tive uma instabilidade nesta busca.',
+            'Pode me enviar no formato: "segmento em UF acima de valor"?',
+            '_Exemplo: "obras em SP acima de 100k"_',
+        ].join('\n')
+
+        await enviarMensagem(numero, mensagemResiliente).catch(() => { })
     }
-
-    marcarComoLido(numero, messageId).catch(() => { })
-
-    const etapaAtual = await buscarEtapaConversa(numero)
-    console.log(`[Webhook] Etapa atual: ${etapaAtual ?? 'nova'}`)
-    const intencao = await identificarIntencao(texto, etapaAtual)
-
-    console.log(`[Webhook] ${numero} — etapa: ${etapaAtual ?? 'nova'}, intenção: ${intencao}`)
-
-    let resposta: string
-
-    switch (intencao) {
-        case 'onboarding':
-            resposta = await handleOnboarding(numero, texto)
-            break
-        case 'comando':
-            resposta = await handleComando(numero, texto)
-            break
-        case 'consulta':
-            resposta = [
-                '🔍 Função de consulta manual chegando em breve!',
-                '',
-                '_Por enquanto, seus alertas automáticos são enviados todo dia às 7h._',
-            ].join('\n')
-            break
-        case 'duvida':
-        default:
-            resposta = await respostaDuvida(texto)
-            break
-    }
-
-    await enviarMensagem(numero, resposta)
 }
 
-// ─── GET — Health check ────────────────────────────────────────────────────
 
-export async function GET(): Promise<NextResponse> {
-    return NextResponse.json({ ok: true, service: 'LicitaIA Webhook (Z-API)' })
+
+async function atualizarContextoConversa(numero: string, patch: Partial<ContextoConversa>): Promise<ContextoConversa | null> {
+    const supabase = createAdminClient()
+    const { data } = await supabase
+        .from('conversas')
+        .select('contexto_json')
+        .eq('numero_whatsapp', numero)
+        .maybeSingle()
+
+    const atual = (data?.contexto_json as ContextoConversa) ?? {}
+    const proximo: ContextoConversa = { ...atual, ...patch }
+
+    await supabase
+        .from('conversas')
+        .update({ contexto_json: proximo })
+        .eq('numero_whatsapp', numero)
+
+    return proximo
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

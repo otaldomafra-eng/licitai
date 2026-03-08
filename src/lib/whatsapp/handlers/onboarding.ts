@@ -1,17 +1,15 @@
 /**
  * onboarding.ts — Handler do fluxo de onboarding via WhatsApp
  *
- * Gerencia a coleta de perfil da empresa em etapas sequenciais:
- * inicio → descricao_empresa → estados → faixa_valor → concluido
- *
- * Persiste o estado em `conversas` (Supabase) a cada mensagem.
- * Ao concluir, salva o perfil em `usuarios` e `perfil_empresa`.
+ * Etapas: inicio → nome → descricao_empresa → estados → faixa_valor → concluido
  */
 
 import { createAdminClient } from '@/lib/supabase/server'
 import {
     extrairDadosPerfil,
     respostaBemVindo,
+    respostaBemVindoDeVolta,
+    respostaPedirDescricao,
     respostaPedirEstados,
     respostaPedirFaixaValor,
     respostaConcluido,
@@ -20,7 +18,6 @@ import type { ConversaDB, ContextoConversa, EtapaOnboarding } from '@/types'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-/** Busca ou cria o registro de conversa para um número */
 async function buscarOuCriarConversa(numero: string): Promise<ConversaDB> {
     const supabase = createAdminClient()
 
@@ -31,10 +28,8 @@ async function buscarOuCriarConversa(numero: string): Promise<ConversaDB> {
         .maybeSingle()
 
     if (error) throw new Error(`[Onboarding] Erro ao buscar conversa: ${error.message}`)
-
     if (existente) return existente as ConversaDB
 
-    // Cria novo registro de conversa
     const { data: nova, error: errCriacao } = await supabase
         .from('conversas')
         .insert({ numero_whatsapp: numero, etapa: 'inicio', contexto_json: {} })
@@ -45,7 +40,6 @@ async function buscarOuCriarConversa(numero: string): Promise<ConversaDB> {
     return nova as ConversaDB
 }
 
-/** Atualiza o estado da conversa no banco */
 async function atualizarConversa(
     numero: string,
     etapa: EtapaOnboarding,
@@ -61,21 +55,21 @@ async function atualizarConversa(
     if (error) throw new Error(`[Onboarding] Erro ao atualizar conversa: ${error.message}`)
 }
 
-/**
- * Ao concluir o onboarding, salva o perfil completo no Supabase.
- * Usa o número WhatsApp como chave para criar/atualizar o usuário.
- */
 async function salvarPerfilCompleto(
     numero: string,
     contexto: Required<Pick<ContextoConversa, 'descricao'>> & ContextoConversa
 ): Promise<void> {
     const supabase = createAdminClient()
 
-    // 1. Upsert na tabela usuarios (chave: whatsapp)
+    // 1. Upsert na tabela usuarios (inclui nome se disponível)
     const { data: usuario, error: errUsuario } = await supabase
         .from('usuarios')
         .upsert(
-            { whatsapp: numero, updated_at: new Date().toISOString() },
+            {
+                whatsapp: numero,
+                nome: contexto.nome ?? null,
+                updated_at: new Date().toISOString(),
+            },
             { onConflict: 'whatsapp' }
         )
         .select('id')
@@ -105,13 +99,11 @@ async function salvarPerfilCompleto(
 
     if (errPerfil) throw new Error(`[Onboarding] Erro ao salvar perfil: ${errPerfil.message}`)
 
-    // 3. Marca conversa como concluída
     await atualizarConversa(numero, 'concluido', contexto)
 
     console.log(`[Onboarding] Perfil salvo para ${numero} (usuario_id: ${usuarioId})`)
 }
 
-/** Extrai palavras-chave simples da descrição */
 function extrairPalavrasChave(descricao: string): string[] {
     const stopwords = new Set(['de', 'do', 'da', 'para', 'com', 'em', 'e', 'o', 'a', 'os', 'as', 'um', 'uma'])
     return descricao
@@ -121,14 +113,13 @@ function extrairPalavrasChave(descricao: string): string[] {
         .slice(0, 10)
 }
 
-/** Infere segmentos a partir da descrição */
 function inferirSegmentos(descricao: string, _ufs: string[]): string[] {
     const desc = descricao.toLowerCase()
     const segmentos: string[] = []
 
     const mapeamento: Record<string, string[]> = {
         'Tecnologia da Informação': ['software', 'sistema', 'ti ', 'tecnologia', 'desenvolvimento', 'aplicativo', 'app', 'digital'],
-        'Construção Civil': ['construção', 'obra', 'engenharia', 'reforma', 'pavimentação'],
+        'Construção Civil': ['construção', 'obra', 'engenharia', 'reforma', 'pavimentação', 'arquitetura'],
         'Saúde': ['saúde', 'hospital', 'médico', 'farmácia', 'equipamento médico'],
         'Educação': ['educação', 'escola', 'ensino', 'treinamento', 'capacitação'],
         'Limpeza e Conservação': ['limpeza', 'conservação', 'higienização', 'zeladoria'],
@@ -147,12 +138,27 @@ function inferirSegmentos(descricao: string, _ufs: string[]): string[] {
     return segmentos.length > 0 ? segmentos : ['Outros']
 }
 
+/**
+ * Parser de valor robusto — checa unidade na string capturada, não no texto completo.
+ * Evita o bug de "acima" (contém "m") ativar multiplicador de milhão.
+ */
+function parseValor(s: string): number {
+    const sLower = s.toLowerCase().replace(/\./g, '').replace(',', '.')
+    const n = parseFloat(sLower.replace(/[^\d.]/g, ''))
+    if (isNaN(n)) return 0
+
+    // Verifica unidade explícita na string capturada
+    if (/milh[aã]o|milh[oõ]es/.test(sLower) || /^\d+(\.\d+)?\s*m$/.test(sLower.trim())) {
+        return n * 1_000_000
+    }
+    if (/\bmil\b/.test(sLower) || /^\d+(\.\d+)?\s*k$/.test(sLower.trim())) {
+        return n * 1_000
+    }
+    return n
+}
+
 // ─── Handler principal ────────────────────────────────────────────────────
 
-/**
- * Processa mensagem no contexto do onboarding.
- * @returns Texto de resposta a ser enviado ao usuário
- */
 export async function handleOnboarding(
     numero: string,
     texto: string
@@ -161,30 +167,34 @@ export async function handleOnboarding(
     const etapa = conversa.etapa
     const contexto: ContextoConversa = conversa.contexto_json ?? {}
 
-    // ── Etapa: inicio (saudação → pedir descrição da empresa) ──────────────
-    if (etapa === 'inicio' || etapa === 'concluido') {
-        // Se já tem perfil concluído mas mandou "oi", oferece menu
-        if (etapa === 'concluido') {
-            return [
-                '👋 Bem-vindo de volta!',
-                '',
-                'Seu perfil já está configurado e estou monitorando licitações para você.',
-                '',
-                '_Responda *menu* para ver opções ou faça uma pergunta sobre licitações._',
-            ].join('\n')
-        }
-
-        await atualizarConversa(numero, 'descricao_empresa', contexto)
+    // ── Etapa: inicio → pedir nome ─────────────────────────────────────────
+    if (etapa === 'inicio') {
+        await atualizarConversa(numero, 'nome', contexto)
         return respostaBemVindo()
+    }
+
+    // ── Etapa: concluido → boas-vindas de volta ────────────────────────────
+    if (etapa === 'concluido') {
+        return respostaBemVindoDeVolta(contexto.nome)
+    }
+
+    // ── Etapa: nome → pedir descrição da empresa ───────────────────────────
+    if (etapa === 'nome') {
+        if (texto.trim().length < 2) {
+            return 'Por favor, informe o seu nome para continuarmos.'
+        }
+        // Usa apenas o primeiro nome
+        const nome = texto.trim().split(/\s+/)[0]
+        const novoContexto: ContextoConversa = { ...contexto, nome }
+        await atualizarConversa(numero, 'descricao_empresa', novoContexto)
+        return respostaPedirDescricao(nome)
     }
 
     // ── Etapa: descricao_empresa → pedir estados ───────────────────────────
     if (etapa === 'descricao_empresa') {
-        const dados = await extrairDadosPerfil('descricao_empresa', texto)
-
-        if (!dados.descricao || dados.descricao.length < 10) {
+        if (texto.trim().length < 10) {
             return [
-                '📝 Preciso entender melhor o que sua empresa faz.',
+                '📝 Preciso de uma descrição mais detalhada.',
                 '',
                 '_Por favor, descreva em uma frase o produto ou serviço principal da sua empresa._',
                 '',
@@ -192,58 +202,96 @@ export async function handleOnboarding(
             ].join('\n')
         }
 
+        const dados = await extrairDadosPerfil('descricao_empresa', texto)
+        const descricao = dados.descricao && dados.descricao.length >= 10
+            ? dados.descricao
+            : texto.trim()
+
         const novoContexto: ContextoConversa = {
             ...contexto,
-            descricao: dados.descricao,
+            descricao,
             razao_social: dados.razao_social ?? null,
         }
 
         await atualizarConversa(numero, 'estados', novoContexto)
-        return respostaPedirEstados()
+        return respostaPedirEstados(contexto.nome)
     }
 
     // ── Etapa: estados → pedir faixa de valor ─────────────────────────────
     if (etapa === 'estados') {
-        const dados = await extrairDadosPerfil('estados', texto)
+        const textoNorm = texto.toLowerCase()
+        const TODAS_UFS = ['AC','AL','AM','AP','BA','CE','DF','ES','GO','MA','MG','MS','MT','PA','PB','PE','PI','PR','RJ','RN','RO','RR','RS','SC','SE','SP','TO']
 
-        if (!dados.uf_interesse || dados.uf_interesse.length === 0) {
+        let ufsManual: string[] = []
+        if (textoNorm.includes('todo brasil') || textoNorm.includes('todos') || textoNorm.includes('nacional')) {
+            ufsManual = TODAS_UFS
+        } else {
+            ufsManual = TODAS_UFS.filter(uf => new RegExp(`\\b${uf}\\b`, 'i').test(texto))
+        }
+
+        const dados = await extrairDadosPerfil('estados', texto)
+        const ufs = (dados.uf_interesse && dados.uf_interesse.length > 0)
+            ? dados.uf_interesse
+            : ufsManual
+
+        if (!ufs || ufs.length === 0) {
             return [
-                '🗺️ Não consegui identificar os estados.',
+                '🗺️ Não foi possível identificar os estados.',
                 '',
-                '_Por favor, informe as siglas dos estados separadas por vírgula._',
+                '_Por favor, informe as siglas separadas por vírgula._',
                 '_Ex: SP, RJ, MG — ou "todo Brasil"_',
             ].join('\n')
         }
 
-        const novoContexto: ContextoConversa = {
-            ...contexto,
-            uf_interesse: dados.uf_interesse,
-        }
-
+        const novoContexto: ContextoConversa = { ...contexto, uf_interesse: ufs }
         await atualizarConversa(numero, 'faixa_valor', novoContexto)
-        return respostaPedirFaixaValor(dados.uf_interesse)
+        return respostaPedirFaixaValor(ufs, contexto.nome)
     }
 
     // ── Etapa: faixa_valor → concluir onboarding ──────────────────────────
     if (etapa === 'faixa_valor') {
         const dados = await extrairDadosPerfil('faixa_valor', texto)
 
-        const novoContexto: ContextoConversa = {
-            ...contexto,
-            valor_min: dados.valor_min ?? null,
-            valor_max: dados.valor_max ?? null,
+        let valorMinFallback: number | null = null
+        let valorMaxFallback: number | null = null
+
+        if (dados.valor_min === undefined && dados.valor_max === undefined) {
+            const t = texto.toLowerCase().replace(/\./g, '').replace(',', '.')
+
+            const acima = t.match(/acima\s+de\s+([\d.,]+\s*(?:milh[aã]o|milh[oõ]es|mil|[km])?)/i)
+            const ate   = t.match(/até\s+([\d.,]+\s*(?:milh[aã]o|milh[oõ]es|mil|[km])?)/i)
+            const entre = t.match(/entre\s+([\d.,]+\s*[km]?)\s+e\s+([\d.,]+\s*[km]?)/i)
+            const simples = t.match(/^([\d]+)\s*([mk])$/i)
+
+            if (entre) {
+                valorMinFallback = parseValor(entre[1])
+                valorMaxFallback = parseValor(entre[2])
+            } else if (acima) {
+                valorMinFallback = parseValor(acima[1])
+            } else if (ate) {
+                valorMaxFallback = parseValor(ate[1])
+            } else if (simples) {
+                const num = parseInt(simples[1])
+                const unidade = simples[2].toLowerCase()
+                valorMinFallback = unidade === 'm' ? num * 1_000_000 : num * 1_000
+            }
         }
 
-        // Valida que temos a descrição (obrigatória)
+        const novoContexto: ContextoConversa = {
+            ...contexto,
+            valor_min: dados.valor_min ?? valorMinFallback,
+            valor_max: dados.valor_max ?? valorMaxFallback,
+        }
+
         if (!novoContexto.descricao) {
             await atualizarConversa(numero, 'inicio', {})
             return respostaBemVindo()
         }
 
-        // Salva perfil completo no Supabase
         await salvarPerfilCompleto(numero, novoContexto as Required<Pick<ContextoConversa, 'descricao'>> & ContextoConversa)
 
         return respostaConcluido(
+            novoContexto.nome,
             novoContexto.descricao!,
             novoContexto.uf_interesse ?? [],
             novoContexto.valor_min ?? null,
@@ -251,19 +299,17 @@ export async function handleOnboarding(
         )
     }
 
-    // Fallback
     return respostaBemVindo()
 }
 
-/** Reinicia o onboarding para um número (usado em "mudar perfil") */
+/** Reinicia o onboarding (usado em "mudar perfil") */
 export async function reiniciarOnboarding(numero: string): Promise<string> {
     const supabase = createAdminClient()
 
     await supabase
         .from('conversas')
-        .update({ etapa: 'inicio', contexto_json: {}, updated_at: new Date().toISOString() })
+        .update({ etapa: 'nome', contexto_json: {}, updated_at: new Date().toISOString() })
         .eq('numero_whatsapp', numero)
 
-    await atualizarConversa(numero, 'descricao_empresa', {})
     return respostaBemVindo()
 }

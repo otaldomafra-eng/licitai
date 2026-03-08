@@ -6,16 +6,30 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:conversation": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/conversation-state.spec.ts",
+    "test:conversation:e2e": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/conversation-e2e.spec.ts",
+    "test:conversation:flow:e2e": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/clarification-flow.e2e.spec.ts",
+    "test:conversation:concluded:e2e": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/concluded-flow.e2e.spec.ts",
+    "test:conversation:intent:e2e": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/intent-context-flow.e2e.spec.ts",
+    "test:conversation:dispatch:e2e": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/dispatch-flow.e2e.spec.ts",
+    "test:conversation:memory:e2e": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/memory-flow.e2e.spec.ts",
+    "test:conversation:webhook:e2e": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/webhook-pipeline.e2e.spec.ts",
+    "test:conversation:stress": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/conversation-stress.spec.ts",
+    "test:conversation:chaos": "node --experimental-strip-types --experimental-specifier-resolution=node src/lib/whatsapp/conversation-chaos.spec.ts",
+    "test:conversation:all": "npm run test:conversation && npm run test:conversation:e2e && npm run test:conversation:flow:e2e && npm run test:conversation:concluded:e2e && npm run test:conversation:intent:e2e && npm run test:conversation:dispatch:e2e && npm run test:conversation:memory:e2e && npm run test:conversation:webhook:e2e && npm run test:conversation:stress && npm run test:conversation:chaos",
+    "test:conversation:regression": "npm run test:conversation:all && npx tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.78.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.98.0",
     "date-fns": "^4.1.0",
+    "groq-sdk": "^0.37.0",
     "next": "16.1.6",
+    "openai": "^6.25.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "twilio": "^5.12.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {

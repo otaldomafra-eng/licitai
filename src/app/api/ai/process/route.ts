@@ -5,11 +5,38 @@ import { enviarAlertasEmLote } from '@/lib/whatsapp/handlers/alerta'
 import type { EditalDB, PerfilEmpresa } from '@/types'
 
 const SCORE_MINIMO_MATCH = 80   // acima disso notifica o usuário
-const EDITAIS_POR_CICLO = 20    // quantos editais processar por execução
+const EDITAIS_POR_CICLO = 50    // quantos editais buscar do banco por execução
 
 function autenticarCron(req: Request): boolean {
   const auth = req.headers.get('authorization')
   return auth === `Bearer ${process.env.CRON_SECRET}`
+}
+
+/**
+ * Aplica pré-filtro heurístico antes de enviar para a IA.
+ * Reduz chamadas à Cerebras descartando editais claramente incompatíveis.
+ */
+function aplicarPreFiltro(editais: EditalDB[], perfil: PerfilEmpresa): EditalDB[] {
+  return editais.filter((e) => {
+    // Filtro de UF: se perfil tem UFs definidas, descarta editais de outras UFs
+    if (perfil.uf_interesse?.length > 0) {
+      if (e.uf_orgao && !perfil.uf_interesse.includes(e.uf_orgao)) {
+        return false
+      }
+    }
+
+    // Filtro de valor mínimo: se edital tem valor e está abaixo do mínimo do perfil
+    if (perfil.valor_min !== null && e.valor_estimado !== null) {
+      if (e.valor_estimado < perfil.valor_min) return false
+    }
+
+    // Filtro de valor máximo: se edital tem valor e está acima do máximo do perfil
+    if (perfil.valor_max !== null && e.valor_estimado !== null) {
+      if (e.valor_estimado > perfil.valor_max) return false
+    }
+
+    return true
+  })
 }
 
 export async function POST(req: Request) {
@@ -19,7 +46,12 @@ export async function POST(req: Request) {
 
   const supabase = createAdminClient()
   const inicio = Date.now()
-  const estatisticas = { matches_criados: 0, notificacoes: 0, erros: 0 }
+  const estatisticas = {
+    matches_criados: 0,
+    notificacoes: 0,
+    erros: 0,
+    editais_pre_filtrados: 0,
+  }
 
   try {
     // 1. Busca editais ainda não processados pela IA
@@ -47,10 +79,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ sucesso: true, mensagem: 'Nenhum perfil de empresa cadastrado' })
     }
 
-    // 3. Para cada perfil, analisa os editais pendentes com a IA
+    // 3. Para cada perfil, aplica pré-filtro e analisa com a IA
     for (const perfil of perfis as PerfilEmpresa[]) {
+      const editaisFiltrados = aplicarPreFiltro(editais as EditalDB[], perfil)
+      estatisticas.editais_pre_filtrados += editais.length - editaisFiltrados.length
+
+      if (!editaisFiltrados.length) {
+        console.log(`[AI Process] Perfil ${perfil.usuario_id}: todos editais descartados pelo pré-filtro`)
+        continue
+      }
+
+      console.log(
+        `[AI Process] Perfil ${perfil.usuario_id}: ${editaisFiltrados.length}/${editais.length} editais após pré-filtro`
+      )
+
       const resultados = await processarLoteEditais(
-        editais as EditalDB[],
+        editaisFiltrados,
         perfil,
         (atual, total) =>
           console.log(`[AI Process] Perfil ${perfil.usuario_id}: ${atual}/${total}`)
@@ -105,10 +149,9 @@ export async function POST(req: Request) {
 
         const whatsapp = usuario?.whatsapp as string | null | undefined
         if (whatsapp) {
-          // Monta lista de alertas para envio em lote
           const alertas: import('@/lib/whatsapp/handlers/alerta').DadosAlerta[] = []
           for (const m of paraNotificar) {
-            const edital = editais.find((e) => e.id === m.edital_id)
+            const edital = editaisFiltrados.find((e) => e.id === m.edital_id)
             const resultado = resultados.find((r) => r.edital_id === m.edital_id)?.resultado
             if (!edital || !resultado) continue
             alertas.push({

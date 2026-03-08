@@ -1,4 +1,4 @@
-// ============================================
+﻿// ============================================
 // TIPOS: API PNCP
 // ============================================
 export interface EditalPNCP {
@@ -11,6 +11,7 @@ export interface EditalPNCP {
   }
   unidadeOrgao: {
     ufNome: string
+    ufSigla: string
     municipioNome: string
     nomeUnidade: string
     codigoUnidade: string
@@ -48,6 +49,9 @@ export interface PerfilEmpresa {
   uf_interesse: string[]
   valor_min: number | null
   valor_max: number | null
+  municipio_sede?: string | null
+  uf_sede?: string | null
+  porte_empresa?: string | null
 }
 
 export interface EditalDB {
@@ -77,10 +81,10 @@ export interface EditalDB {
 // TIPOS: RESULTADO DA IA
 // ============================================
 export interface ResultadoMatch {
-  score: number           // 0 a 100
-  justificativa: string   // Texto explicando o match
-  pontos_fortes: string[] // Por que é uma boa oportunidade
-  riscos: string[]        // Pontos de atenção
+  score: number
+  justificativa: string
+  pontos_fortes: string[]
+  riscos: string[]
   recomendacao: 'PARTICIPAR' | 'AVALIAR' | 'IGNORAR'
 }
 
@@ -96,7 +100,6 @@ export interface MatchEdital {
   proposta_rascunho: string | null
   notificado: boolean
   created_at: string
-  // join com editais_pncp
   editais_pncp?: EditalDB
 }
 
@@ -106,17 +109,72 @@ export interface MatchEdital {
 
 export type EtapaOnboarding =
   | 'inicio'
+  | 'nome'
   | 'descricao_empresa'
   | 'estados'
   | 'faixa_valor'
   | 'concluido'
 
+export interface FiltrosConsulta {
+  termos: string[]
+  ufs: string[]
+  prazo_min_dias: number | null
+  prazo_max_dias: number | null
+  valor_min: number | null
+  valor_max: number | null
+  modalidade: string | null
+  tipo_orgao: string | null
+  excluir: string[]
+}
+
+export interface MemoriaUsuarioConversa {
+  ufs_preferidas?: string[]
+  segmentos_preferidos?: string[]
+  valor_min_preferido?: number | null
+  valor_max_preferido?: number | null
+  estilo_resposta?: 'direto' | 'detalhado'
+  ultima_intencao?: 'onboarding' | 'consulta' | 'comando' | 'duvida'
+  topicos_recentes?: string[]
+  atualizado_em?: string
+}
+
 export interface ContextoConversa {
+  nome?: string
   descricao?: string
   uf_interesse?: string[]
   valor_min?: number | null
   valor_max?: number | null
   razao_social?: string | null
+  ultima_busca?: Array<{
+    id: string
+    indice: number
+    nome_orgao: string
+    objeto: string
+    link: string
+    valor_estimado?: number | null
+    data_encerramento?: string | null
+    modalidade?: string | null
+    uf_orgao?: string | null
+  }>
+  aguardando_acao_edital_id?: string
+  ultimos_filtros?: FiltrosConsulta
+  ultimo_offset_busca?: number
+  historico_mensagens?: Array<{
+    role: 'user' | 'assistant'
+    texto: string
+    at: string
+  }>
+  objetivo_atual?: 'consulta' | 'duvida' | 'comando'
+  perfil_comunicacao?: 'direto' | 'consultivo'
+  aguardando_clarificacao?: {
+    ativa: boolean
+    tipo: 'consulta' | 'duvida'
+    pergunta: string
+    base_usuario: string
+    criado_em: string
+    tentativas?: number
+  } | null
+  memoria_usuario?: MemoriaUsuarioConversa
 }
 
 export interface ConversaDB {
@@ -127,17 +185,15 @@ export interface ConversaDB {
   updated_at: string
 }
 
-// Payload normalizado após parsing do webhook Evolution API
 export interface MensagemWhatsApp {
-  numero: string       // ex: '5511999999999'
-  texto: string        // conteúdo da mensagem
-  messageId: string    // ID original da mensagem
-  fromMe: boolean      // true se enviado pelo próprio bot
-  isGroup: boolean     // true se mensagem de grupo
+  numero: string
+  texto: string
+  messageId: string
+  fromMe: boolean
+  isGroup: boolean
   timestamp: number
 }
 
-// Intenção identificada pela IA
 export type IntencaoMensagem = 'onboarding' | 'consulta' | 'comando' | 'duvida'
 
 // ============================================

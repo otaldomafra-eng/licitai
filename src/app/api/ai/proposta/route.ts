@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
+import OpenAI from 'openai'
 import { createAdminClient } from '@/lib/supabase/server'
 import { createClient } from '@/lib/supabase/server'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+const cerebras = new OpenAI({
+  apiKey: process.env.CEREBRAS_API_KEY,
+  baseURL: 'https://api.cerebras.ai/v1',
+})
 
 export async function POST(req: Request) {
   // Autentica o usuário via sessão (não é cron — é chamada do browser)
@@ -71,14 +74,14 @@ Gere o esboço com as seguintes seções:
 
 Use linguagem formal e profissional. Inclua alertas sobre campos que o usuário precisará personalizar com dados reais da empresa.`
 
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
+  const response = await cerebras.chat.completions.create({
+    model: 'llama3.1-70b',
     max_tokens: 2048,
+    temperature: 0.7,
     messages: [{ role: 'user', content: prompt }],
   })
 
-  const rascunho =
-    message.content[0].type === 'text' ? message.content[0].text : ''
+  const rascunho = response.choices[0]?.message?.content ?? ''
 
   // Salva o rascunho e atualiza o status
   await admin
